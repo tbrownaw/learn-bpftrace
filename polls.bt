@@ -1,0 +1,86 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/fs.h>
+#include <linux/socket.h>
+#include <net/sock.h>
+
+BEGIN {
+    printf("Start.\n");
+}
+
+// This will look for poll() calls
+// - against a single FD
+// - where that FD is a socket
+// - for IPv4 or IPv6
+// and will print out how long that poill takes, along
+// with the local and remode endpoints of the socket.
+tracepoint:syscalls:sys_enter_poll {
+    if (args->nfds > 1) {
+        return;
+    }
+    // Capture the file descriptor being polled
+    $first = args->ufds[0];
+    //print($first);
+    $first_fd = $first.fd;
+
+    // There has *got* to be a better way to turn a fd into a struct sock* or struct socket*.
+    // Or even into a struct file*.
+    $t = curtask; // task_struct*
+    $files = $t->files; // files_struct*
+    $fdtable = $files->fdt; // fdtable*
+    $fdarr = $fdtable->fd; // fd**, or the file descriptor array
+    $file = *($fdarr + $first_fd); // struct file*
+
+    $addr_sock_poll = kaddr("sock_poll");
+    $is_sock = $file->f_op->poll == $addr_sock_poll;
+    if (!$is_sock) {
+        return;
+    }
+    $as_sock = (struct socket*)$file->private_data;
+    $sk = $as_sock->sk;
+
+    $inet_family = $sk->__sk_common.skc_family;
+
+    if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+        // initialize variable type:
+        $daddr = ntop(0);
+        $saddr = ntop(0);
+        if ($inet_family == AF_INET) {
+            $daddr = ntop($sk->__sk_common.skc_daddr);
+            $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+        } else {
+            $daddr = ntop(
+                $sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+            $saddr = ntop(
+                $sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        }
+        $lport = $sk->__sk_common.skc_num;
+        $dport = $sk->__sk_common.skc_dport;
+
+        // Destination port is big endian, it must be flipped
+        $dport = bswap($dport);
+
+        $stime = nsecs(tai);
+        @polls[tid] = (
+            $daddr, $dport,
+            $saddr, $lport,
+            $stime
+        );
+    }
+}
+
+tracepoint:syscalls:sys_exit_poll /has_key(@polls, tid)/ {
+    $etime = nsecs(tai);
+    $tup = @polls[tid];
+    $daddr = $tup.0;
+    $dport = $tup.1;
+    $saddr = $tup.2;
+    $lport = $tup.3;
+    $stime = $tup.4;
+
+    printf("%lld (%d elapsed) %d %d %s; %s %d <- %s %d\n",
+        $stime, $etime-$stime, pid, tid, comm,
+        $daddr, $dport, $saddr, $lport);
+
+    delete(@polls, tid);
+}
