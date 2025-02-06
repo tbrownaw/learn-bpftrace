@@ -1,8 +1,17 @@
 #!/usr/bin/env bpftrace
 
-#include <linux/fs.h>
-#include <linux/socket.h>
-#include <net/sock.h>
+// THere is a thing called BTF, BPT Type Format .
+// This lets the kernel export relevant structure definitions in a binary format
+// that things like bpftrace can read.
+// So no headers, and that's why most examples don't use any.
+// And this is why there was a "#ifndef BPFTRACE_HAVE_BTF" guard in the demo I was cribbing.
+// There is a separate program bpftool that allows to inspect this information.
+// `sudo bpftool btf dump id 1 | vi -` to view.
+// If a struct prints as empty or is missing (all) members it should have,
+// it might need to be explicitly casted for some reason. 
+
+#define AF_INET   2
+#define AF_INET6 10
 
 BEGIN {
     printf("Start.\n");
@@ -29,13 +38,14 @@ tracepoint:syscalls:sys_enter_poll {
     $files = $t->files; // files_struct*
     $fdtable = $files->fdt; // fdtable*
     $fdarr = $fdtable->fd; // fd**, or the file descriptor array
-    $file = *($fdarr + $first_fd); // struct file*
+    $file = (struct file*)*($fdarr + $first_fd); // struct file* ... this one needs the cast to recognize the type
 
     $addr_sock_poll = kaddr("sock_poll");
     $is_sock = $file->f_op->poll == $addr_sock_poll;
     if (!$is_sock) {
         return;
     }
+    
     $as_sock = (struct socket*)$file->private_data;
     $sk = $as_sock->sk;
 
@@ -68,6 +78,7 @@ tracepoint:syscalls:sys_enter_poll {
         );
     }
 }
+
 
 tracepoint:syscalls:sys_exit_poll /has_key(@polls, tid)/ {
     $etime = nsecs(tai);
