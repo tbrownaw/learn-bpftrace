@@ -34,6 +34,9 @@ tracepoint:syscalls:sys_enter_poll {
 
     // There has *got* to be a better way to turn a fd into a struct sock* or struct socket*.
     // Or even into a struct file*.
+    // ...there are bpf helper functions for part of this, but bpftrace is its own language that
+    // doesn't just expose everything bpf can do. It doesn't (yet) seem to have a builtin defined
+    // for say bpf_sock_from_file (https://docs.ebpf.io/linux/helper-function/bpf_sock_from_file/) .
     $t = curtask; // task_struct*
     $files = $t->files; // files_struct*
     $fdtable = $files->fdt; // fdtable*
